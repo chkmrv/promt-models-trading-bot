@@ -1,0 +1,117 @@
+//@version=5
+strategy("Institutional BTC/USDT 1H Execution Engine", 
+         overlay=true, 
+         initial_capital=50000, 
+         default_qty_type=strategy.percent_of_equity, 
+         default_qty_value=95, 
+         commission_type=strategy.commission.percent, 
+         commission_value=0.06, 
+         slippage=2, 
+         pyramiding=0)
+
+// ==========================================
+// 1. INPUT CONFIGURATION
+// ==========================================
+grp_mode   = "Trade Execution Mode"
+tradeMode  = input.string("Long Only", "Trading Direction", options=["Long Only", "Long & Short"], group=grp_mode)
+
+grp_trend  = "Trend Architecture (1H & Daily)"
+useHtf     = input.bool(true, "Enable Daily Macro Gate", group=grp_trend)
+htfEmaLen  = input.int(200, "Daily EMA Length", group=grp_trend)
+fastEmaLen = input.int(20, "1H Fast EMA", group=grp_trend)
+slowEmaLen = input.int(50, "1H Slow EMA", group=grp_trend)
+baseEmaLen = input.int(200, "1H Baseline EMA", group=grp_trend)
+
+grp_vol    = "Volatility & Pullback Triggers"
+rsiLen     = input.int(14, "RSI Length", group=grp_vol)
+rsiDip     = input.int(42, "RSI Pullback Threshold", group=grp_vol)
+atrLen     = input.int(14, "ATR Lookback Period", group=grp_vol)
+
+grp_risk   = "Risk Controls (ATR Multipliers)"
+slMult     = input.float(2.0, "Initial Stop Loss (x ATR)", minval=0.5, step=0.1, group=grp_risk)
+tpMult     = input.float(3.2, "Take Profit Target (x ATR)", minval=1.0, step=0.1, group=grp_risk)
+trailMult  = input.float(2.2, "Trailing Stop Distance (x ATR)", minval=0.5, step=0.1, group=grp_risk)
+
+// ==========================================
+// 2. INDICATOR ENGINE (ZERO REPAINTING)
+// ==========================================
+atrVal = ta.atr(atrLen)
+rsiVal = ta.rsi(close, rsiLen)
+
+emaFast = ta.ema(close, fastEmaLen)
+emaSlow = ta.ema(close, slowEmaLen)
+emaBase = ta.ema(close, baseEmaLen)
+
+// Non-repainting HTF security request (anchored strictly to closed daily bars)
+htfDailyEma = request.security(syminfo.tickerid, "D", ta.ema(close, htfEmaLen)[1], barmerge.gaps_off, barmerge.lookahead_off)
+macroBull   = not useHtf or (close > htfDailyEma)
+macroBear   = not useHtf or (close < htfDailyEma)
+
+// 1H Momentum & Trend Confirmation
+trendBull = (emaFast > emaSlow) and (close > emaBase) and macroBull
+trendBear = (emaFast < emaSlow) and (close < emaBase) and macroBear
+
+// Pullback Trigger: Rebound after an intraday dip within an ongoing trend
+longSignal  = trendBull and ta.crossover(rsiVal, rsiDip) and (close > open)
+shortSignal = (tradeMode == "Long & Short") and trendBear and ta.crossunder(rsiVal, 100 - rsiDip) and (close < open)
+
+// ==========================================
+// 3. PERSISTENT ORDER STATE MANAGEMENT
+// ==========================================
+var float stopLossPrice = na
+var float takeProfitPrice = na
+
+// Position Entry Execution
+if (longSignal and strategy.position_size == 0)
+    strategy.entry("Long", strategy.long, alert_message='{"action": "BUY", "symbol": "BTCUSDT"}')
+    stopLossPrice   := close - (atrVal * slMult)
+    takeProfitPrice := close + (atrVal * tpMult)
+
+if (shortSignal and strategy.position_size == 0)
+    strategy.entry("Short", strategy.short, alert_message='{"action": "SELL", "symbol": "BTCUSDT"}')
+    stopLossPrice   := close + (atrVal * slMult)
+    takeProfitPrice := close - (atrVal * tpMult)
+
+// ==========================================
+// 4. CLEAN EXITS & UNAMBIGUOUS TRAILING
+// ==========================================
+if (strategy.position_size > 0)
+    // Ratchet Trailing Stop up with price expansion (never down)
+    dynamicTrail = close - (atrVal * trailMult)
+    stopLossPrice := math.max(nz(stopLossPrice, dynamicTrail), dynamicTrail)
+
+    // Structural Trend Invalidation Exit (Closes position when 1H trend breaks)
+    if (ta.crossunder(close, emaSlow))
+        strategy.close("Long", comment="Trend Breakdown")
+
+    // Resting Stop Loss & Take Profit Bracket
+    strategy.exit("Exit_Long", from_entry="Long", stop=stopLossPrice, limit=takeProfitPrice, alert_message='{"action": "CLOSE_LONG"}')
+
+else if (strategy.position_size < 0)
+    // Ratchet Trailing Stop down with price decline (never up)
+    dynamicTrail = close + (atrVal * trailMult)
+    stopLossPrice := math.min(nz(stopLossPrice, dynamicTrail), dynamicTrail)
+
+    // Structural Trend Invalidation Exit
+    if (ta.crossover(close, emaSlow))
+        strategy.close("Short", comment="Trend Reversal")
+
+    // Resting Stop Loss & Take Profit Bracket
+    strategy.exit("Exit_Short", from_entry="Short", stop=stopLossPrice, limit=takeProfitPrice, alert_message='{"action": "CLOSE_SHORT"}')
+
+else
+    // Reset order states when flat
+    stopLossPrice   := na
+    takeProfitPrice := na
+
+// ==========================================
+// 5. CHART VISUALIZATION & MONITORING
+// ==========================================
+plot(emaFast, "Fast EMA 20", color=color.new(color.teal, 0), linewidth=1)
+plot(emaSlow, "Slow EMA 50", color=color.new(color.orange, 0), linewidth=2)
+plot(emaBase, "Base EMA 200", color=color.new(color.blue, 0), linewidth=2)
+
+plot(strategy.position_size > 0 ? stopLossPrice : na,   "Long Active SL",  color=color.red,   style=plot.style_linebr, linewidth=2)
+plot(strategy.position_size > 0 ? takeProfitPrice : na, "Long Active TP",  color=color.green, style=plot.style_linebr, linewidth=2)
+plot(strategy.position_size < 0 ? stopLossPrice : na,   "Short Active SL", color=color.red,   style=plot.style_linebr, linewidth=2)
+plot(strategy.position_size < 0 ? takeProfitPrice : na, "Short Active TP", color=color.green, style=plot.style_linebr, linewidth=2)
