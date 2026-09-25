@@ -1,0 +1,1908 @@
+//@version=6
+
+strategy(
+     "BTC/USDT Institutional 1H Multi-Regime v3",
+     overlay = true,
+     pyramiding = 0,
+     initial_capital = 100000,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.04,
+     slippage = 2,
+     process_orders_on_close = true,
+     calc_on_order_fills = true
+)
+
+//=============================================================================
+// INPUT GROUPS
+//=============================================================================
+
+groupTrend     = "01 - Trend"
+groupMomentum  = "02 - Momentum"
+groupLiquidity = "03 - Liquidity"
+groupSignals   = "04 - Signal Engine"
+groupRisk      = "05 - Risk Management"
+groupExits     = "06 - Stop Loss / Take Profit"
+groupFilters   = "07 - Filters"
+groupDisplay   = "08 - Display"
+
+
+//=============================================================================
+// 01 - TREND
+//=============================================================================
+
+emaFastLen = input.int(
+     20,
+     "Fast EMA",
+     minval = 2,
+     group = groupTrend
+)
+
+emaMidLen = input.int(
+     50,
+     "Medium EMA",
+     minval = 5,
+     group = groupTrend
+)
+
+emaSlowLen = input.int(
+     200,
+     "Slow EMA",
+     minval = 20,
+     group = groupTrend
+)
+
+htf = input.timeframe(
+     "240",
+     "Higher Timeframe",
+     group = groupTrend
+)
+
+macroTF = input.timeframe(
+     "D",
+     "Macro Timeframe",
+     group = groupTrend
+)
+
+
+//=============================================================================
+// 02 - MOMENTUM
+//=============================================================================
+
+rsiLen = input.int(
+     14,
+     "RSI Length",
+     group = groupMomentum
+)
+
+adxLen = input.int(
+     14,
+     "ADX DI Length",
+     group = groupMomentum
+)
+
+adxSmooth = input.int(
+     14,
+     "ADX Smoothing",
+     group = groupMomentum
+)
+
+macdFast = input.int(
+     12,
+     "MACD Fast",
+     group = groupMomentum
+)
+
+macdSlow = input.int(
+     26,
+     "MACD Slow",
+     group = groupMomentum
+)
+
+macdSignal = input.int(
+     9,
+     "MACD Signal",
+     group = groupMomentum
+)
+
+volumeLen = input.int(
+     20,
+     "Volume Average",
+     group = groupMomentum
+)
+
+rvolMin = input.float(
+     0.65,
+     "Minimum Relative Volume",
+     minval = 0.1,
+     step = 0.05,
+     group = groupMomentum
+)
+
+
+//=============================================================================
+// 03 - LIQUIDITY
+//=============================================================================
+
+pivotLeft = input.int(
+     3,
+     "Pivot Left",
+     minval = 1,
+     group = groupLiquidity
+)
+
+pivotRight = input.int(
+     3,
+     "Pivot Right",
+     minval = 1,
+     group = groupLiquidity
+)
+
+sweepLookback = input.int(
+     6,
+     "Sweep Valid For Bars",
+     minval = 1,
+     group = groupLiquidity
+)
+
+atrSweepBuffer = input.float(
+     0.05,
+     "Sweep ATR Buffer",
+     minval = 0,
+     step = 0.01,
+     group = groupLiquidity
+)
+
+
+//=============================================================================
+// 04 - SIGNAL ENGINE
+//=============================================================================
+
+minimumScore = input.int(
+     45,
+     "Minimum Entry Score",
+     minval = 20,
+     maxval = 100,
+     group = groupSignals
+)
+
+strongScore = input.int(
+     70,
+     "Strong Signal Score",
+     minval = 20,
+     maxval = 100,
+     group = groupSignals
+)
+
+breakoutLength = input.int(
+     8,
+     "Breakout Lookback",
+     minval = 3,
+     group = groupSignals
+)
+
+
+//=============================================================================
+// 05 - RISK MANAGEMENT
+//=============================================================================
+
+riskPercent = input.float(
+     0.50,
+     "Risk Per Trade %",
+     minval = 0.05,
+     maxval = 5.0,
+     step = 0.05,
+     group = groupRisk
+)
+
+reducedRiskPercent = input.float(
+     0.25,
+     "Reduced Risk %",
+     minval = 0.05,
+     maxval = 5.0,
+     step = 0.05,
+     group = groupRisk
+)
+
+reduceAfterLosses = input.int(
+     3,
+     "Reduce Risk After Consecutive Losses",
+     minval = 1,
+     group = groupRisk
+)
+
+maxConsecutiveLosses = input.int(
+     5,
+     "Maximum Consecutive Losses",
+     minval = 1,
+     group = groupRisk
+)
+
+dailyLossLimit = input.float(
+     2.0,
+     "Daily Loss Limit %",
+     minval = 0.1,
+     step = 0.1,
+     group = groupRisk
+)
+
+weeklyLossLimit = input.float(
+     5.0,
+     "Weekly Loss Limit %",
+     minval = 0.1,
+     step = 0.1,
+     group = groupRisk
+)
+
+cooldownBars = input.int(
+     1,
+     "Cooldown Bars",
+     minval = 0,
+     group = groupRisk
+)
+
+
+//=============================================================================
+// 06 - STOP LOSS / TAKE PROFIT
+//=============================================================================
+
+atrLen = input.int(
+     14,
+     "ATR Length",
+     minval = 2,
+     group = groupExits
+)
+
+atrStopMultiplier = input.float(
+     1.8,
+     "ATR Stop Multiplier",
+     minval = 0.5,
+     step = 0.1,
+     group = groupExits
+)
+
+tp1R = input.float(
+     1.0,
+     "Take Profit 1 (R)",
+     minval = 0.5,
+     step = 0.1,
+     group = groupExits
+)
+
+tp2R = input.float(
+     2.0,
+     "Take Profit 2 (R)",
+     minval = 0.5,
+     step = 0.1,
+     group = groupExits
+)
+
+tp3R = input.float(
+     3.0,
+     "Take Profit 3 (R)",
+     minval = 0.5,
+     step = 0.1,
+     group = groupExits
+)
+
+tp1Percent = input.float(
+     30,
+     "TP1 Position %",
+     minval = 0,
+     maxval = 100,
+     group = groupExits
+)
+
+tp2Percent = input.float(
+     30,
+     "TP2 Position %",
+     minval = 0,
+     maxval = 100,
+     group = groupExits
+)
+
+tp3Percent = input.float(
+     20,
+     "TP3 Position %",
+     minval = 0,
+     maxval = 100,
+     group = groupExits
+)
+
+trailMultiplier = input.float(
+     2.0,
+     "Runner ATR Trail",
+     minval = 0.5,
+     step = 0.1,
+     group = groupExits
+)
+
+
+//=============================================================================
+// 07 - FILTERS
+//=============================================================================
+
+minimumADX = input.float(
+     12,
+     "Minimum ADX",
+     minval = 0,
+     step = 0.5,
+     group = groupFilters
+)
+
+minimumRR = input.float(
+     1.2,
+     "Minimum Reward/Risk",
+     minval = 0.5,
+     step = 0.1,
+     group = groupFilters
+)
+
+maxCandleATR = input.float(
+     2.5,
+     "Maximum Candle Size / ATR",
+     minval = 1,
+     step = 0.1,
+     group = groupFilters
+)
+
+useWeekendFilter = input.bool(
+     false,
+     "Disable Weekend Trading",
+     group = groupFilters
+)
+
+allowLong = input.bool(
+     true,
+     "Allow Long",
+     group = groupFilters
+)
+
+allowShort = input.bool(
+     true,
+     "Allow Short",
+     group = groupFilters
+)
+
+
+//=============================================================================
+// 08 - DISPLAY
+//=============================================================================
+
+showEMAs = input.bool(
+     true,
+     "Show EMAs",
+     group = groupDisplay
+)
+
+showLiquidity = input.bool(
+     true,
+     "Show Liquidity Levels",
+     group = groupDisplay
+)
+
+showSignals = input.bool(
+     true,
+     "Show Entry Signals",
+     group = groupDisplay
+)
+
+showDashboard = input.bool(
+     true,
+     "Show Dashboard",
+     group = groupDisplay
+)
+
+
+//=============================================================================
+// CORE INDICATORS
+//=============================================================================
+
+ema20 = ta.ema(close, emaFastLen)
+ema50 = ta.ema(close, emaMidLen)
+ema200 = ta.ema(close, emaSlowLen)
+
+rsi = ta.rsi(close, rsiLen)
+
+[macdLine, macdSignalLine, macdHistogram] =
+     ta.macd(
+         close,
+         macdFast,
+         macdSlow,
+         macdSignal
+     )
+
+[diPlus, diMinus, adx] =
+     ta.dmi(
+         adxLen,
+         adxSmooth
+     )
+
+atr = ta.atr(atrLen)
+
+volumeAverage = ta.sma(
+     volume,
+     volumeLen
+)
+
+rvol =
+     volumeAverage > 0 ?
+     volume / volumeAverage :
+     0
+
+vwap = ta.vwap(hlc3)
+
+
+//=============================================================================
+// HIGHER TIMEFRAME
+//=============================================================================
+
+htfClose =
+     request.security(
+         syminfo.tickerid,
+         htf,
+         close,
+         lookahead = barmerge.lookahead_off
+     )
+
+htfEMA20 =
+     request.security(
+         syminfo.tickerid,
+         htf,
+         ta.ema(close, emaFastLen),
+         lookahead = barmerge.lookahead_off
+     )
+
+htfEMA50 =
+     request.security(
+         syminfo.tickerid,
+         htf,
+         ta.ema(close, emaMidLen),
+         lookahead = barmerge.lookahead_off
+     )
+
+htfEMA200 =
+     request.security(
+         syminfo.tickerid,
+         htf,
+         ta.ema(close, emaSlowLen),
+         lookahead = barmerge.lookahead_off
+     )
+
+
+//=============================================================================
+// DAILY MACRO
+//=============================================================================
+
+dailyClose =
+     request.security(
+         syminfo.tickerid,
+         macroTF,
+         close,
+         lookahead = barmerge.lookahead_off
+     )
+
+dailyEMA200 =
+     request.security(
+         syminfo.tickerid,
+         macroTF,
+         ta.ema(close, emaSlowLen),
+         lookahead = barmerge.lookahead_off
+     )
+
+
+//=============================================================================
+// TREND
+//=============================================================================
+
+bullTrend =
+     ema20 > ema50 and
+     ema50 > ema200
+
+bearTrend =
+     ema20 < ema50 and
+     ema50 < ema200
+
+bullHTF =
+     htfEMA20 > htfEMA50 and
+     htfClose > htfEMA200
+
+bearHTF =
+     htfEMA20 < htfEMA50 and
+     htfClose < htfEMA200
+
+dailyBull =
+     dailyClose > dailyEMA200
+
+dailyBear =
+     dailyClose < dailyEMA200
+
+
+//=============================================================================
+// PREVIOUS DAY / WEEK LEVELS
+//=============================================================================
+
+previousDayHigh =
+     request.security(
+         syminfo.tickerid,
+         "D",
+         high[1],
+         lookahead = barmerge.lookahead_off
+     )
+
+previousDayLow =
+     request.security(
+         syminfo.tickerid,
+         "D",
+         low[1],
+         lookahead = barmerge.lookahead_off
+     )
+
+previousWeekHigh =
+     request.security(
+         syminfo.tickerid,
+         "W",
+         high[1],
+         lookahead = barmerge.lookahead_off
+     )
+
+previousWeekLow =
+     request.security(
+         syminfo.tickerid,
+         "W",
+         low[1],
+         lookahead = barmerge.lookahead_off
+     )
+
+
+//=============================================================================
+// SWING LEVELS
+//=============================================================================
+
+pivotHigh =
+     ta.pivothigh(
+         high,
+         pivotLeft,
+         pivotRight
+     )
+
+pivotLow =
+     ta.pivotlow(
+         low,
+         pivotLeft,
+         pivotRight
+     )
+
+var float swingHigh = na
+var float swingLow = na
+
+if not na(pivotHigh)
+    swingHigh := pivotHigh
+
+if not na(pivotLow)
+    swingLow := pivotLow
+
+
+//=============================================================================
+// LIQUIDITY SWEEPS
+//=============================================================================
+
+sellSideSweep =
+     (
+         not na(swingLow) and
+         low < swingLow - atr * atrSweepBuffer and
+         close > swingLow
+     )
+     or
+     (
+         low < previousDayLow - atr * atrSweepBuffer and
+         close > previousDayLow
+     )
+     or
+     (
+         low < previousWeekLow - atr * atrSweepBuffer and
+         close > previousWeekLow
+     )
+
+buySideSweep =
+     (
+         not na(swingHigh) and
+         high > swingHigh + atr * atrSweepBuffer and
+         close < swingHigh
+     )
+     or
+     (
+         high > previousDayHigh + atr * atrSweepBuffer and
+         close < previousDayHigh
+     )
+     or
+     (
+         high > previousWeekHigh + atr * atrSweepBuffer and
+         close < previousWeekHigh
+     )
+
+
+//=============================================================================
+// REMEMBER RECENT SWEEPS
+//=============================================================================
+
+var int lastSellSweepBar = na
+var int lastBuySweepBar = na
+
+if sellSideSweep
+    lastSellSweepBar := bar_index
+
+if buySideSweep
+    lastBuySweepBar := bar_index
+
+recentSellSweep =
+     not na(lastSellSweepBar) and
+     bar_index - lastSellSweepBar <= sweepLookback
+
+recentBuySweep =
+     not na(lastBuySweepBar) and
+     bar_index - lastBuySweepBar <= sweepLookback
+
+
+//=============================================================================
+// BREAKOUT
+//=============================================================================
+
+breakoutHigh =
+     ta.highest(
+         high[1],
+         breakoutLength
+     )
+
+breakoutLow =
+     ta.lowest(
+         low[1],
+         breakoutLength
+     )
+
+bullBreakout =
+     close > breakoutHigh
+
+bearBreakout =
+     close < breakoutLow
+
+
+//=============================================================================
+// PULLBACKS
+//=============================================================================
+
+bullPullback =
+     bullTrend and
+     low <= ema20 and
+     close > ema20
+
+bearPullback =
+     bearTrend and
+     high >= ema20 and
+     close < ema20
+
+bullDeepPullback =
+     bullTrend and
+     low <= ema50 and
+     close > ema50
+
+bearDeepPullback =
+     bearTrend and
+     high >= ema50 and
+     close < ema50
+
+
+//=============================================================================
+// MOMENTUM
+//=============================================================================
+
+bullMomentum =
+     rsi > 52 and
+     macdLine > macdSignalLine
+
+bearMomentum =
+     rsi < 48 and
+     macdLine < macdSignalLine
+
+strongBullMomentum =
+     rsi > 55 and
+     macdHistogram > 0
+
+strongBearMomentum =
+     rsi < 45 and
+     macdHistogram < 0
+
+
+//=============================================================================
+// RSI REVERSALS
+//=============================================================================
+
+bullRSIReversal =
+     ta.crossover(rsi, 40)
+
+bearRSIReversal =
+     ta.crossunder(rsi, 60)
+
+
+//=============================================================================
+// FVG
+//=============================================================================
+
+bullishFVG =
+     low > high[2]
+
+bearishFVG =
+     high < low[2]
+
+var float bullFVGHigh = na
+var float bullFVGLow = na
+var int bullFVGBar = na
+
+var float bearFVGHigh = na
+var float bearFVGLow = na
+var int bearFVGBar = na
+
+if bullishFVG
+    bullFVGLow := high[2]
+    bullFVGHigh := low
+    bullFVGBar := bar_index
+
+if bearishFVG
+    bearFVGLow := high
+    bearFVGHigh := low[2]
+    bearFVGBar := bar_index
+
+bullFVGActive =
+     not na(bullFVGBar) and
+     bar_index - bullFVGBar <= 12 and
+     close >= bullFVGLow and
+     close <= bullFVGHigh
+
+bearFVGActive =
+     not na(bearFVGBar) and
+     bar_index - bearFVGBar <= 12 and
+     close >= bearFVGLow and
+     close <= bearFVGHigh
+
+
+//=============================================================================
+// CANDLE / VOLUME
+//=============================================================================
+
+candleRange =
+     high - low
+
+normalCandle =
+     candleRange <= atr * maxCandleATR
+
+bullCandle =
+     close > open
+
+bearCandle =
+     close < open
+
+volumeConfirmation =
+     rvol >= rvolMin
+
+strongVolume =
+     rvol >= 1.20
+
+
+//=============================================================================
+// WEEKEND
+//=============================================================================
+
+isWeekend =
+     dayofweek == dayofweek.saturday or
+     dayofweek == dayofweek.sunday
+
+sessionAllowed =
+     not useWeekendFilter or not isWeekend
+
+
+//=============================================================================
+// SIGNAL SCORE
+//=============================================================================
+
+float longScore = 0.0
+float shortScore = 0.0
+
+
+//-----------------------------------------------------------------------------
+// LONG
+//-----------------------------------------------------------------------------
+
+if bullTrend
+    longScore += 15
+
+if bullHTF
+    longScore += 10
+
+if dailyBull
+    longScore += 5
+
+if recentSellSweep
+    longScore += 20
+
+if bullPullback
+    longScore += 15
+
+if bullDeepPullback
+    longScore += 10
+
+if bullBreakout
+    longScore += 15
+
+if bullMomentum
+    longScore += 10
+
+if strongBullMomentum
+    longScore += 5
+
+if bullRSIReversal
+    longScore += 8
+
+if bullFVGActive
+    longScore += 8
+
+if volumeConfirmation
+    longScore += 5
+
+if strongVolume
+    longScore += 5
+
+if close > vwap
+    longScore += 5
+
+if adx >= minimumADX
+    longScore += 5
+
+if bullCandle
+    longScore += 3
+
+
+//-----------------------------------------------------------------------------
+// SHORT
+//-----------------------------------------------------------------------------
+
+if bearTrend
+    shortScore += 15
+
+if bearHTF
+    shortScore += 10
+
+if dailyBear
+    shortScore += 5
+
+if recentBuySweep
+    shortScore += 20
+
+if bearPullback
+    shortScore += 15
+
+if bearDeepPullback
+    shortScore += 10
+
+if bearBreakout
+    shortScore += 15
+
+if bearMomentum
+    shortScore += 10
+
+if strongBearMomentum
+    shortScore += 5
+
+if bearRSIReversal
+    shortScore += 8
+
+if bearFVGActive
+    shortScore += 8
+
+if volumeConfirmation
+    shortScore += 5
+
+if strongVolume
+    shortScore += 5
+
+if close < vwap
+    shortScore += 5
+
+if adx >= minimumADX
+    shortScore += 5
+
+if bearCandle
+    shortScore += 3
+
+
+//=============================================================================
+// SETUP TYPES
+//=============================================================================
+
+longLiquidity =
+     recentSellSweep
+
+shortLiquidity =
+     recentBuySweep
+
+longTrendContinuation =
+     bullTrend and
+     bullMomentum and
+     (bullPullback or bullDeepPullback)
+
+shortTrendContinuation =
+     bearTrend and
+     bearMomentum and
+     (bearPullback or bearDeepPullback)
+
+longBreakout =
+     bullBreakout and
+     bullMomentum
+
+shortBreakout =
+     bearBreakout and
+     bearMomentum
+
+longMomentum =
+     bullMomentum and
+     close > ema20
+
+shortMomentum =
+     bearMomentum and
+     close < ema20
+
+longReversal =
+     bullRSIReversal or
+     longLiquidity
+
+shortReversal =
+     bearRSIReversal or
+     shortLiquidity
+
+
+//=============================================================================
+// BIAS
+//=============================================================================
+
+longBias =
+     bullTrend or
+     bullHTF or
+     longLiquidity or
+     bullBreakout
+
+shortBias =
+     bearTrend or
+     bearHTF or
+     shortLiquidity or
+     bearBreakout
+
+
+//=============================================================================
+// RISK STATE
+//=============================================================================
+
+newDay =
+     ta.change(time("D")) != 0
+
+newWeek =
+     ta.change(time("W")) != 0
+
+var float dayStartNetProfit = 0.0
+var float weekStartNetProfit = 0.0
+
+if barstate.isfirst
+    dayStartNetProfit := strategy.netprofit
+    weekStartNetProfit := strategy.netprofit
+
+if newDay
+    dayStartNetProfit := strategy.netprofit
+
+if newWeek
+    weekStartNetProfit := strategy.netprofit
+
+dailyPnL =
+     strategy.netprofit - dayStartNetProfit
+
+weeklyPnL =
+     strategy.netprofit - weekStartNetProfit
+
+dailyLossPercent =
+     dailyPnL < 0 ?
+     math.abs(dailyPnL) /
+     strategy.initial_capital *
+     100 :
+     0
+
+weeklyLossPercent =
+     weeklyPnL < 0 ?
+     math.abs(weeklyPnL) /
+     strategy.initial_capital *
+     100 :
+     0
+
+dailyHalt =
+     dailyLossPercent >= dailyLossLimit
+
+weeklyHalt =
+     weeklyLossPercent >= weeklyLossLimit
+
+
+//=============================================================================
+// CONSECUTIVE LOSSES
+//=============================================================================
+
+var int lossStreak = 0
+var int processedClosedTrades = 0
+
+if strategy.closedtrades > processedClosedTrades
+
+    lastTradeIndex =
+         strategy.closedtrades - 1
+
+    lastTradeProfit =
+         strategy.closedtrades.profit(
+             lastTradeIndex
+         )
+
+    if lastTradeProfit < 0
+        lossStreak += 1
+    else
+        lossStreak := 0
+
+    processedClosedTrades :=
+         strategy.closedtrades
+
+riskReduced =
+     lossStreak >= reduceAfterLosses
+
+hardRiskHalt =
+     lossStreak >= maxConsecutiveLosses
+
+riskHalted =
+     dailyHalt or
+     weeklyHalt or
+     hardRiskHalt
+
+currentRisk =
+     riskReduced ?
+     reducedRiskPercent :
+     riskPercent
+
+
+//=============================================================================
+// COOLDOWN
+//=============================================================================
+
+var int lastTradeBar = na
+
+cooldownOK =
+     na(lastTradeBar) or
+     bar_index - lastTradeBar >= cooldownBars
+
+
+//=============================================================================
+// ENTRY CONDITIONS
+//=============================================================================
+
+longCondition =
+     barstate.isconfirmed and
+     allowLong and
+     strategy.position_size == 0 and
+     not riskHalted and
+     cooldownOK and
+     sessionAllowed and
+     normalCandle and
+     longBias and
+     longScore >= minimumScore
+
+shortCondition =
+     barstate.isconfirmed and
+     allowShort and
+     strategy.position_size == 0 and
+     not riskHalted and
+     cooldownOK and
+     sessionAllowed and
+     normalCandle and
+     shortBias and
+     shortScore >= minimumScore
+
+
+//=============================================================================
+// STOP LOSS
+//=============================================================================
+
+float calculatedLongStop = na
+float calculatedShortStop = na
+
+if not na(swingLow)
+
+    calculatedLongStop :=
+         math.min(
+             swingLow - atr * atrSweepBuffer,
+             close - atr * atrStopMultiplier
+         )
+
+else
+
+    calculatedLongStop :=
+         close - atr * atrStopMultiplier
+
+
+if not na(swingHigh)
+
+    calculatedShortStop :=
+         math.max(
+             swingHigh + atr * atrSweepBuffer,
+             close + atr * atrStopMultiplier
+         )
+
+else
+
+    calculatedShortStop :=
+         close + atr * atrStopMultiplier
+
+
+//=============================================================================
+// RISK / REWARD
+//=============================================================================
+
+longRiskDistance =
+     close - calculatedLongStop
+
+shortRiskDistance =
+     calculatedShortStop - close
+
+longRR =
+     longRiskDistance > 0 ?
+     tp3R :
+     0
+
+shortRR =
+     shortRiskDistance > 0 ?
+     tp3R :
+     0
+
+longRiskValid =
+     longRiskDistance > syminfo.mintick and
+     longRR >= minimumRR
+
+shortRiskValid =
+     shortRiskDistance > syminfo.mintick and
+     shortRR >= minimumRR
+
+
+//=============================================================================
+// POSITION SIZE
+//=============================================================================
+
+riskCapital =
+     strategy.equity *
+     currentRisk /
+     100
+
+longQty =
+     longRiskDistance > 0 ?
+     riskCapital / longRiskDistance :
+     0
+
+shortQty =
+     shortRiskDistance > 0 ?
+     riskCapital / shortRiskDistance :
+     0
+
+
+//=============================================================================
+// ACTIVE TRADE VARIABLES
+//=============================================================================
+
+var float entryPrice = na
+var float stopPrice = na
+var float riskDistance = na
+
+var float target1 = na
+var float target2 = na
+var float target3 = na
+
+var float highestSinceEntry = na
+var float lowestSinceEntry = na
+
+var bool reachedTP1 = false
+var bool reachedTP2 = false
+
+
+//=============================================================================
+// LONG ENTRY
+//=============================================================================
+
+if longCondition and longRiskValid
+
+    entryPrice := close
+
+    stopPrice := calculatedLongStop
+
+    riskDistance := longRiskDistance
+
+    target1 :=
+         close +
+         longRiskDistance * tp1R
+
+    target2 :=
+         close +
+         longRiskDistance * tp2R
+
+    target3 :=
+         close +
+         longRiskDistance * tp3R
+
+    highestSinceEntry := high
+
+    reachedTP1 := false
+    reachedTP2 := false
+
+    strategy.entry(
+         "LONG",
+         strategy.long,
+         qty = longQty,
+         comment = longScore >= strongScore ?
+             "STRONG LONG" :
+             "LONG"
+     )
+
+    lastTradeBar := bar_index
+
+
+//=============================================================================
+// SHORT ENTRY
+//=============================================================================
+
+if shortCondition and shortRiskValid
+
+    entryPrice := close
+
+    stopPrice := calculatedShortStop
+
+    riskDistance := shortRiskDistance
+
+    target1 :=
+         close -
+         shortRiskDistance * tp1R
+
+    target2 :=
+         close -
+         shortRiskDistance * tp2R
+
+    target3 :=
+         close -
+         shortRiskDistance * tp3R
+
+    lowestSinceEntry := low
+
+    reachedTP1 := false
+    reachedTP2 := false
+
+    strategy.entry(
+         "SHORT",
+         strategy.short,
+         qty = shortQty,
+         comment = shortScore >= strongScore ?
+             "STRONG SHORT" :
+             "SHORT"
+     )
+
+    lastTradeBar := bar_index
+
+
+//=============================================================================
+// LONG MANAGEMENT
+//=============================================================================
+
+if strategy.position_size > 0
+
+    highestSinceEntry :=
+         na(highestSinceEntry) ?
+         high :
+         math.max(
+             highestSinceEntry,
+             high
+         )
+
+    if high >= target1
+        reachedTP1 := true
+
+    if high >= target2
+        reachedTP2 := true
+
+    float managedLongStop =
+         stopPrice
+
+    // Move stop to break-even after TP1.
+    if reachedTP1
+
+        managedLongStop :=
+             math.max(
+                 managedLongStop,
+                 entryPrice
+             )
+
+    // ATR trailing stop after TP2.
+    if reachedTP2
+
+        trailingLongStop =
+             highestSinceEntry -
+             atr * trailMultiplier
+
+        managedLongStop :=
+             math.max(
+                 managedLongStop,
+                 trailingLongStop
+             )
+
+    strategy.exit(
+         "LONG TP1",
+         from_entry = "LONG",
+         stop = managedLongStop,
+         limit = target1,
+         qty_percent = tp1Percent
+     )
+
+    strategy.exit(
+         "LONG TP2",
+         from_entry = "LONG",
+         stop = managedLongStop,
+         limit = target2,
+         qty_percent = tp2Percent
+     )
+
+    strategy.exit(
+         "LONG TP3",
+         from_entry = "LONG",
+         stop = managedLongStop,
+         limit = target3,
+         qty_percent = tp3Percent
+     )
+
+    runnerPercent =
+         math.max(
+             0,
+             100 -
+             tp1Percent -
+             tp2Percent -
+             tp3Percent
+         )
+
+    if runnerPercent > 0
+
+        strategy.exit(
+             "LONG RUNNER",
+             from_entry = "LONG",
+             stop = managedLongStop,
+             qty_percent = runnerPercent
+         )
+
+
+//=============================================================================
+// SHORT MANAGEMENT
+//=============================================================================
+
+if strategy.position_size < 0
+
+    lowestSinceEntry :=
+         na(lowestSinceEntry) ?
+         low :
+         math.min(
+             lowestSinceEntry,
+             low
+         )
+
+    if low <= target1
+        reachedTP1 := true
+
+    if low <= target2
+        reachedTP2 := true
+
+    float managedShortStop =
+         stopPrice
+
+    // Move stop to break-even after TP1.
+    if reachedTP1
+
+        managedShortStop :=
+             math.min(
+                 managedShortStop,
+                 entryPrice
+             )
+
+    // ATR trailing stop after TP2.
+    if reachedTP2
+
+        trailingShortStop =
+             lowestSinceEntry +
+             atr * trailMultiplier
+
+        managedShortStop :=
+             math.min(
+                 managedShortStop,
+                 trailingShortStop
+             )
+
+    strategy.exit(
+         "SHORT TP1",
+         from_entry = "SHORT",
+         stop = managedShortStop,
+         limit = target1,
+         qty_percent = tp1Percent
+     )
+
+    strategy.exit(
+         "SHORT TP2",
+         from_entry = "SHORT",
+         stop = managedShortStop,
+         limit = target2,
+         qty_percent = tp2Percent
+     )
+
+    strategy.exit(
+         "SHORT TP3",
+         from_entry = "SHORT",
+         stop = managedShortStop,
+         limit = target3,
+         qty_percent = tp3Percent
+     )
+
+    runnerPercent =
+         math.max(
+             0,
+             100 -
+             tp1Percent -
+             tp2Percent -
+             tp3Percent
+         )
+
+    if runnerPercent > 0
+
+        strategy.exit(
+             "SHORT RUNNER",
+             from_entry = "SHORT",
+             stop = managedShortStop,
+             qty_percent = runnerPercent
+         )
+
+
+//=============================================================================
+// RESET VARIABLES AFTER TRADE
+//=============================================================================
+
+positionClosed =
+     strategy.position_size == 0 and
+     strategy.position_size[1] != 0
+
+if positionClosed
+
+    entryPrice := na
+    stopPrice := na
+    riskDistance := na
+
+    target1 := na
+    target2 := na
+    target3 := na
+
+    highestSinceEntry := na
+    lowestSinceEntry := na
+
+    reachedTP1 := false
+    reachedTP2 := false
+
+
+//=============================================================================
+// PLOTS
+//=============================================================================
+
+plot(
+     showEMAs ? ema20 : na,
+     title = "EMA 20",
+     linewidth = 1
+)
+
+plot(
+     showEMAs ? ema50 : na,
+     title = "EMA 50",
+     linewidth = 2
+)
+
+plot(
+     showEMAs ? ema200 : na,
+     title = "EMA 200",
+     linewidth = 2
+)
+
+plot(
+     showLiquidity ? previousDayHigh : na,
+     title = "Previous Day High",
+     style = plot.style_linebr
+)
+
+plot(
+     showLiquidity ? previousDayLow : na,
+     title = "Previous Day Low",
+     style = plot.style_linebr
+)
+
+plot(
+     showLiquidity ? previousWeekHigh : na,
+     title = "Previous Week High",
+     style = plot.style_linebr
+)
+
+plot(
+     showLiquidity ? previousWeekLow : na,
+     title = "Previous Week Low",
+     style = plot.style_linebr
+)
+
+plot(
+     showLiquidity ? swingHigh : na,
+     title = "Swing High",
+     style = plot.style_linebr
+)
+
+plot(
+     showLiquidity ? swingLow : na,
+     title = "Swing Low",
+     style = plot.style_linebr
+)
+
+
+//=============================================================================
+// ENTRY MARKERS
+//=============================================================================
+
+plotshape(
+     showSignals and
+     sellSideSweep,
+     title = "Sell Side Liquidity Sweep",
+     style = shape.triangleup,
+     location = location.belowbar,
+     size = size.tiny,
+     text = "SSL"
+)
+
+plotshape(
+     showSignals and
+     buySideSweep,
+     title = "Buy Side Liquidity Sweep",
+     style = shape.triangledown,
+     location = location.abovebar,
+     size = size.tiny,
+     text = "BSL"
+)
+
+plotshape(
+     showSignals and
+     longCondition and
+     longRiskValid,
+     title = "LONG ENTRY",
+     style = shape.labelup,
+     location = location.belowbar,
+     size = size.small,
+     text = "LONG"
+)
+
+plotshape(
+     showSignals and
+     shortCondition and
+     shortRiskValid,
+     title = "SHORT ENTRY",
+     style = shape.labeldown,
+     location = location.abovebar,
+     size = size.small,
+     text = "SHORT"
+)
+
+
+//=============================================================================
+// DASHBOARD
+//=============================================================================
+
+var table dashboard =
+     table.new(
+         position.top_right,
+         2,
+         16
+     )
+
+if barstate.islast and showDashboard
+
+    table.cell(
+         dashboard,
+         0,
+         0,
+         "BTC 1H V3"
+     )
+
+    table.cell(
+         dashboard,
+         1,
+         0,
+         "MULTI-REGIME"
+     )
+
+    table.cell(
+         dashboard,
+         0,
+         1,
+         "4H Trend"
+     )
+
+    table.cell(
+         dashboard,
+         1,
+         1,
+         bullHTF ?
+             "BULL" :
+         bearHTF ?
+             "BEAR" :
+             "NEUTRAL"
+     )
+
+    table.cell(
+         dashboard,
+         0,
+         2,
+         "Daily Trend"
+     )
+
+    table.cell(
+         dashboard,
+         1,
+         2,
+         dailyBull ?
+             "BULL" :
+         dailyBear ?
+             "BEAR" :
+             "NEUTRAL"
+     )
+
+    table.cell(
+         dashboard,
+         0,
+         3,
+         "Long Score"
+     )
+
+    table.cell(
+         dashboard,
+         1,
+         3,
+         str.tostring(
+             longScore,
+             "#"
+         )
+     )
+
+    table.cell(
+         dashboard,
+         0,
+         4,
+         "Short Score"
+     )
+
+    table.cell(
+         dashboard,
+         1,
+         4,
+         str.tostring(
+             shortScore,
+             "#"
+         )
+     )
+
+    table.cell(
+         dashboard,
+         0,
+         5,
+         "RSI"
+     )
+
+    table.cell(
+         dashboard,
+         1,
+         5,
+         str.tostring(
+             rsi,
+             "#.0"
+         )
+     )
+
+    table.cell(
+         dashboard,
+         0,
+         6,
+         "ADX"
+     )
+
+    table.cell(
+         dashboard,
+         1,
+         6,
+         str.tostring(
+             adx,
+             "#.0"
+         )
+     )
+
+    table.cell(
+         dashboard,
+         0,
+         7,
+         "RVOL"
+     )
+
+    table.cell(
+         dashboard,
+         1,
+         7,
+         str.tostring(
+             rvol,
+             "#.00"
+         )
+     )
+
+    table.cell(
+         dashboard,
+         0,
+         8,
+         "Loss Streak"
+     )
+
+    table.cell(
+         dashboard,
+         1,
+         8,
+         str.tostring(
+             lossStreak
+         )
+     )
+
+    table.cell(
+         dashboard,
+         0,
+         9,
+         "Risk / Trade"
+     )
+
+    table.cell(
+         dashboard,
+         1,
+         9,
+         str.tostring(
+             currentRisk,
+             "#.00"
+         ) + "%"
+     )
+
+    table.cell(
+         dashboard,
+         0,
+         10,
+         "Daily Loss"
+     )
+
+    table.cell(
+         dashboard,
+         1,
+         10,
+         str.tostring(
+             dailyLossPercent,
+             "#.00"
+         ) + "%"
+     )
+
+    table.cell(
+         dashboard,
+         0,
+         11,
+         "Weekly Loss"
+     )
+
+    table.cell(
+         dashboard,
+         1,
+         11,
+         str.tostring(
+             weeklyLossPercent,
+             "#.00"
+         ) + "%"
+     )
+
+    table.cell(
+         dashboard,
+         0,
+         12,
+         "Trend Setup"
+     )
+
+    table.cell(
+         dashboard,
+         1,
+         12,
+         longTrendContinuation ?
+             "LONG" :
+         shortTrendContinuation ?
+             "SHORT" :
+             "-"
+     )
+
+    table.cell(
+         dashboard,
+         0,
+         13,
+         "Breakout"
+     )
+
+    table.cell(
+         dashboard,
+         1,
+         13,
+         longBreakout ?
+             "LONG" :
+         shortBreakout ?
+             "SHORT" :
+             "-"
+     )
+
+    table.cell(
+         dashboard,
+         0,
+         14,
+         "Liquidity"
+     )
+
+    table.cell(
+         dashboard,
+         1,
+         14,
+         longLiquidity ?
+             "LONG" :
+         shortLiquidity ?
+             "SHORT" :
+             "-"
+     )
+
+    table.cell(
+         dashboard,
+         0,
+         15,
+         "STATUS"
+     )
+
+    table.cell(
+         dashboard,
+         1,
+         15,
+         riskHalted ?
+             "HALTED" :
+         riskReduced ?
+             "REDUCED" :
+             "NORMAL"
+     )
+
+
+//=============================================================================
+// ALERTS
+//=============================================================================
+
+alertcondition(
+     longCondition and longRiskValid,
+     title = "BTC LONG",
+     message = "BTC/USDT 1H V3 LONG"
+)
+
+alertcondition(
+     shortCondition and shortRiskValid,
+     title = "BTC SHORT",
+     message = "BTC/USDT 1H V3 SHORT"
+)
+
+alertcondition(
+     riskHalted,
+     title = "RISK HALT",
+     message = "BTC/USDT 1H V3 RISK HALT"
+)
