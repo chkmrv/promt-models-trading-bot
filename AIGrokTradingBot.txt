@@ -1,0 +1,167 @@
+//@version=5
+strategy("AMT-BTC Active Trend Momentum v3", 
+     overlay=true, 
+     initial_capital=10000, 
+     default_qty_type=strategy.cash,
+     currency=currency.USDT,
+     commission_type=strategy.commission.percent, 
+     commission_value=0.06,
+     slippage=3,
+     pyramiding=0,
+     process_orders_on_close=true,
+     calc_on_every_tick=false)
+
+// ═══════════════════════════════════════════════════════════════
+// INPUTS
+// ═══════════════════════════════════════════════════════════════
+grpTrend   = "Trend / Bias"
+useHTF     = input.bool(true, "Use Higher Timeframe Bias Filter", group=grpTrend)
+htf        = input.timeframe("240", "Higher Timeframe (Bias)", group=grpTrend)  // 4H default (faster than Daily)
+emaFastHTF = input.int(20, "HTF Fast EMA", minval=5, group=grpTrend)
+emaSlowHTF = input.int(50, "HTF Slow EMA", minval=10, group=grpTrend)
+emaFast    = input.int(8, "Primary Fast EMA", minval=3, group=grpTrend)
+emaSlow    = input.int(21, "Primary Slow EMA", minval=5, group=grpTrend)
+
+grpEntry   = "Entry Methods"
+useCross   = input.bool(true, "EMA Crossover Entry", group=grpEntry)
+usePullback= input.bool(true, "EMA Pullback Entry", group=grpEntry)
+
+grpMom     = "Momentum Filters"
+useRSI     = input.bool(false, "Use RSI Filter", group=grpMom)          // OFF by default
+rsiLen     = input.int(14, "RSI Length", minval=5, group=grpMom)
+rsiLongMin = input.float(45, "RSI Long Minimum", minval=30, maxval=60, group=grpMom)
+useVol     = input.bool(false, "Use Volume Filter", group=grpMom)       // OFF by default
+volMaLen   = input.int(20, "Volume MA Length", minval=5, group=grpMom)
+volMult    = input.float(1.1, "Volume Multiplier", minval=1.0, step=0.1, group=grpMom)
+
+grpRisk    = "Risk Management"
+riskPct    = input.float(0.8, "Risk per Trade (%)", minval=0.2, maxval=2.5, step=0.1, group=grpRisk)
+atrLen     = input.int(14, "ATR Length", minval=5, group=grpRisk)
+atrSLMult  = input.float(1.5, "ATR Initial Stop Multiplier", minval=1.0, step=0.1, group=grpRisk)
+maxSLPct   = input.float(3.0, "Hard Max Stop-Loss (%)", minval=1.5, step=0.1, group=grpRisk)
+tp1R       = input.float(1.8, "Take-Profit 1 (R-Multiple)", minval=1.0, step=0.1, group=grpRisk)
+tp1Pct     = input.float(50, "TP1 Exit % of Position", minval=20, maxval=80, step=5, group=grpRisk)
+trailATR   = input.float(1.7, "Trailing Stop ATR Multiplier", minval=0.8, step=0.1, group=grpRisk)
+longOnly   = input.bool(true, "Long Only Mode", group=grpRisk)
+maxPosPct  = input.float(18, "Max Position Size (% of Equity)", minval=5, maxval=40, group=grpRisk)
+
+grpMisc    = "Miscellaneous"
+showPlots  = input.bool(true, "Show EMAs & Bias", group=grpMisc)
+dailyLossLimit = input.float(2.5, "Daily Loss Limit (%)", minval=0, group=grpMisc)
+
+// ═══════════════════════════════════════════════════════════════
+// CALCULATIONS
+// ═══════════════════════════════════════════════════════════════
+emaF = ta.ema(close, emaFast)
+emaS = ta.ema(close, emaSlow)
+
+[htfEmaF, htfEmaS, htfClose] = request.security(syminfo.tickerid, htf, 
+     [ta.ema(close, emaFastHTF), ta.ema(close, emaSlowHTF), close], 
+     barmerge.gaps_off, barmerge.lookahead_off)
+
+bullBias = not useHTF or (htfEmaF > htfEmaS and htfClose > htfEmaS)
+bearBias = not useHTF or (htfEmaF < htfEmaS and htfClose < htfEmaS)
+
+rsi   = ta.rsi(close, rsiLen)
+volMa = ta.sma(volume, volMaLen)
+volOK = not useVol or volume > volMa * volMult
+atr   = ta.atr(atrLen)
+
+// Entry signals
+longCross    = ta.crossover(emaF, emaS)
+longPullback = ta.crossover(close, emaF) and emaF > emaS          // price crosses back above fast EMA while uptrend
+shortCross   = ta.crossunder(emaF, emaS)
+shortPullback= ta.crossunder(close, emaF) and emaF < emaS
+
+// ═══════════════════════════════════════════════════════════════
+// ENTRY CONDITIONS (more permissive)
+// ═══════════════════════════════════════════════════════════════
+longCond = bullBias and volOK and (not useRSI or rsi > rsiLongMin) and
+           ((useCross and longCross) or (usePullback and longPullback))
+
+shortCond = not longOnly and bearBias and volOK and (not useRSI or rsi < 55) and
+            ((useCross and shortCross) or (usePullback and shortPullback))
+
+// ═══════════════════════════════════════════════════════════════
+// POSITION SIZING + LOCKED STOP
+// ═══════════════════════════════════════════════════════════════
+var float entryATR   = na
+var float lockedSL   = na
+var float lockedTP1  = na
+
+riskAmount = strategy.equity * (riskPct / 100.0)
+tempStopDist = atr * atrSLMult
+qty = tempStopDist > 0 ? riskAmount / tempStopDist : 0
+maxQty = strategy.equity * (maxPosPct / 100.0) / close
+qty := math.min(math.max(qty, 0), maxQty)
+
+// ═══════════════════════════════════════════════════════════════
+// DAILY LOSS LIMIT
+// ═══════════════════════════════════════════════════════════════
+var float dayStartEquity = na
+if ta.change(time("D")) != 0 or na(dayStartEquity)
+    dayStartEquity := strategy.equity
+dailyLossHit = (strategy.equity - dayStartEquity) / dayStartEquity * 100 <= -dailyLossLimit
+
+// ═══════════════════════════════════════════════════════════════
+// ENTRIES
+// ═══════════════════════════════════════════════════════════════
+if longCond and strategy.position_size == 0 and not dailyLossHit
+    entryATR  := atr
+    lockedSL  := close - math.min(atr * atrSLMult, close * maxSLPct / 100)
+    lockedTP1 := close + (close - lockedSL) * tp1R
+    strategy.entry("Long", strategy.long, qty=qty, comment="Long")
+
+if shortCond and strategy.position_size == 0 and not dailyLossHit
+    entryATR  := atr
+    lockedSL  := close + math.min(atr * atrSLMult, close * maxSLPct / 100)
+    lockedTP1 := close - (lockedSL - close) * tp1R
+    strategy.entry("Short", strategy.short, qty=qty, comment="Short")
+
+// ═══════════════════════════════════════════════════════════════
+// EXITS
+// ═══════════════════════════════════════════════════════════════
+if strategy.position_size > 0
+    strategy.exit("Long SL", from_entry="Long", stop=lockedSL, comment="SL")
+    strategy.exit("Long TP1", from_entry="Long", qty_percent=tp1Pct, limit=lockedTP1, comment="TP1")
+    
+    trailOffset = entryATR * trailATR / syminfo.mintick
+    strategy.exit("Long Trail", from_entry="Long", trail_offset=trailOffset, trail_points=trailOffset, comment="Trail")
+
+if strategy.position_size < 0
+    strategy.exit("Short SL", from_entry="Short", stop=lockedSL, comment="SL")
+    strategy.exit("Short TP1", from_entry="Short", qty_percent=tp1Pct, limit=lockedTP1, comment="TP1")
+    
+    trailOffset = entryATR * trailATR / syminfo.mintick
+    strategy.exit("Short Trail", from_entry="Short", trail_offset=trailOffset, trail_points=trailOffset, comment="Trail")
+
+// Optional bias flip exit
+if strategy.position_size > 0 and useHTF and bearBias
+    strategy.close("Long", comment="Bias Flip")
+if strategy.position_size < 0 and useHTF and bullBias
+    strategy.close("Short", comment="Bias Flip")
+
+// ═══════════════════════════════════════════════════════════════
+// PLOTS
+// ═══════════════════════════════════════════════════════════════
+plot(showPlots ? emaF : na, "Fast EMA", color=color.new(color.teal, 0), linewidth=2)
+plot(showPlots ? emaS : na, "Slow EMA", color=color.new(color.orange, 0), linewidth=2)
+
+bgcolor(showPlots and useHTF ? (bullBias ? color.new(color.green, 92) : bearBias ? color.new(color.red, 92) : na) : na)
+
+plotshape(longCond and strategy.position_size == 0, title="Long", style=shape.triangleup, location=location.belowbar, color=color.new(color.lime, 0), size=size.small)
+plotshape(shortCond and strategy.position_size == 0, title="Short", style=shape.triangledown, location=location.abovebar, color=color.new(color.red, 0), size=size.small)
+
+plot(strategy.position_size > 0 ? lockedSL : na, "Locked SL", color=color.red, style=plot.style_linebr, linewidth=1)
+
+// Info
+var table info = table.new(position.top_right, 2, 4, bgcolor=color.new(color.black, 80))
+if barstate.islast
+    table.cell(info, 0, 0, "Bias", text_color=color.white)
+    table.cell(info, 1, 0, useHTF ? (bullBias ? "BULL" : bearBias ? "BEAR" : "NEUT") : "OFF", text_color=color.white)
+    table.cell(info, 0, 1, "Trades", text_color=color.white)
+    table.cell(info, 1, 1, str.tostring(strategy.closedtrades), text_color=color.white)
+    table.cell(info, 0, 2, "Equity", text_color=color.white)
+    table.cell(info, 1, 2, str.tostring(strategy.equity, "#.0"), text_color=color.white)
+    table.cell(info, 0, 3, "Risk", text_color=color.white)
+    table.cell(info, 1, 3, str.tostring(riskPct) + "%", text_color=color.white)
