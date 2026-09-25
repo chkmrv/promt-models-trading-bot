@@ -1,0 +1,390 @@
+//@version=6
+// ════════════════════════════════════════════════════════════════════════════
+//  INSTITUTIONAL TREND ENGINE v2 | BTC/USDT | 1H chart
+//  4H regime + optional 1D macro filter. Three entry types (breakout,
+//  fast breakout, EMA pullback), a cost-vs-risk filter, ATR stops,
+//  30/30/40 scale-out, chandelier trail, and portfolio circuit breakers.
+//
+//  USE:  Binance BTCUSDT, 1H chart. Paper-trade first. Not financial advice.
+//  NOTE: Pine cannot see your exchange account. For live trading, the webhook
+//        receiver must reconcile position size and place native SL/TP orders.
+//  KEEP IN SYNC: "Assumed fee" / "Assumed slippage" inputs (section 5) must
+//        match the Properties tab (Commission / Slippage).
+// ════════════════════════════════════════════════════════════════════════════
+strategy(
+     title = "Institutional Trend Engine v2 | BTC/USDT 1H",
+     shorttitle = "ITE-BTC-1H",
+     overlay = true,
+     initial_capital = 10000,
+     default_qty_type = strategy.fixed,
+     default_qty_value = 0.001,
+     pyramiding = 0,
+     calc_on_every_tick = false,
+     calc_on_order_fills = false,
+     process_orders_on_close = false,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.1,
+     slippage = 1000,
+     margin_long = 66.67,
+     margin_short = 66.67,
+     use_bar_magnifier = true)
+
+// ═══════════════════════════════ INPUTS ══════════════════════════════════════
+G1 = "1 · General"
+G2 = "2 · Regime (4H) + macro (1D)"
+G3 = "3 · Entries"
+G4 = "4 · Exits (SL / TP)"
+G5 = "5 · Risk, costs & circuit breakers"
+G6 = "6 · Filters"
+G7 = "7 · Alerts / display"
+
+tradingEnabled = input.bool(true,  "Trading enabled (kill switch)", group = G1, tooltip = "Untick to stop new entries AND flatten any open position.")
+allowLong      = input.bool(true,  "Allow longs", group = G1)
+allowShort     = input.bool(false, "Allow shorts (perpetuals only)", group = G1, tooltip = "Off by default. Spot cannot short. Turning this on adds trades in bear regimes. On perps, add a funding-rate filter on the execution side.")
+useBreakout    = input.bool(true,  "Entry A: Donchian breakout", group = G1)
+useFast        = input.bool(true,  "Entry C: fast breakout (more trades)", group = G1)
+usePullback    = input.bool(true,  "Entry B: EMA pullback", group = G1)
+useDateRange   = input.bool(false, "Restrict to date range (for in/out-of-sample tests)", group = G1)
+startTime      = input.time(timestamp("1 Jan 2018 00:00 +0000"), "Range start", group = G1)
+endTime        = input.time(timestamp("31 Dec 2030 00:00 +0000"), "Range end", group = G1)
+
+regimeTF   = input.timeframe("240", "Regime timeframe", group = G2)
+emaFastLen = input.int(50,  "Regime EMA fast", minval = 2, group = G2)
+emaSlowLen = input.int(200, "Regime EMA slow", minval = 5, group = G2)
+slopeLen   = input.int(6,   "Slow-EMA slope lookback (regime bars)", minval = 1, group = G2)
+useMacro   = input.bool(true, "Macro filter: 1D close vs 1D EMA", group = G2, tooltip = "Longs need previous 1D close above the 1D EMA; shorts need it below.")
+macroTF    = input.timeframe("D", "Macro timeframe", group = G2)
+macroLen   = input.int(200, "Macro EMA length", minval = 5, group = G2)
+
+donEntryLen  = input.int(48, "Donchian entry lookback (A)", minval = 5, group = G3)
+donFastLen   = input.int(20, "Fast Donchian lookback (C)", minval = 5, group = G3)
+donExitLen   = input.int(24, "Donchian exit lookback (runner)", minval = 5, group = G3)
+adxLen       = input.int(14, "ADX / DI length", minval = 2, group = G3)
+adxMin       = input.float(18, "ADX min (A breakout)", minval = 5, group = G3)
+adxMinFast   = input.float(22, "ADX min (C fast breakout)", minval = 5, group = G3)
+adxMinPB     = input.float(16, "ADX min (B pullback)", minval = 5, group = G3)
+rsiLen       = input.int(14, "RSI length", minval = 2, group = G3)
+rsiMinL      = input.float(52, "Long RSI window: min", group = G3)
+rsiMaxL      = input.float(80, "Long RSI window: max", group = G3)
+rsiMinS      = input.float(20, "Short RSI window: min", group = G3)
+rsiMaxS      = input.float(48, "Short RSI window: max", group = G3)
+rsiCrossBars = input.int(3, "Pullback: RSI 50-cross within N bars", minval = 1, group = G3)
+volLen       = input.int(20, "Volume SMA length", minval = 2, group = G3)
+volMult      = input.float(0.8, "Volume ≥ SMA ×", minval = 0, step = 0.1, group = G3)
+atrPctMin    = input.float(0.25, "ATR% min", minval = 0, step = 0.05, group = G3)
+atrPctMax    = input.float(2.5, "ATR% max", minval = 0.3, step = 0.1, group = G3)
+emaPullLen   = input.int(34, "Pullback EMA length", minval = 2, group = G3)
+pullLook     = input.int(4, "Pullback: touch within last N bars", minval = 1, group = G3)
+pullTouchAtr = input.float(0.6, "Pullback touch distance (× ATR)", minval = 0, step = 0.1, group = G3)
+
+atrLen       = input.int(14, "ATR length (initial stop)", minval = 2, group = G4)
+stopAtrMult  = input.float(2.5, "Initial stop (× ATR)", minval = 0.5, step = 0.1, group = G4)
+minStopPct   = input.float(0.8, "Min stop distance %", minval = 0.1, step = 0.1, group = G4)
+maxStopPct   = input.float(4.0, "Max stop distance %", minval = 0.5, step = 0.5, group = G4)
+tp1R         = input.float(1.5, "TP1 (R multiple)", minval = 0.5, step = 0.1, group = G4)
+tp1Pct       = input.float(30, "TP1 close % of position", minval = 1, maxval = 60, group = G4)
+tp2R         = input.float(3.0, "TP2 (R multiple)", minval = 1, step = 0.1, group = G4)
+tp2Pct       = input.float(30, "TP2 close % of position", minval = 1, maxval = 60, group = G4)
+beFeePct     = input.float(0.25, "Break-even offset % (covers round-trip fees)", minval = 0, step = 0.05, group = G4)
+trailAtrLen  = input.int(22, "Chandelier ATR length", minval = 2, group = G4)
+trailMult    = input.float(3.0, "Chandelier (× ATR)", minval = 0.5, step = 0.1, group = G4)
+timeStopBars = input.int(36, "Time stop (bars)", minval = 1, group = G4)
+timeStopR    = input.float(0.5, "Time stop: exit if open profit below (R)", step = 0.1, group = G4)
+
+riskPct        = input.float(1.0, "Risk per trade % of equity", minval = 0.1, maxval = 2.0, step = 0.05, group = G5)
+ddScaleStart   = input.float(10.0, "Halve risk when drawdown exceeds %", minval = 1, group = G5)
+ddScaleFactor  = input.float(0.5, "Risk multiplier in drawdown", minval = 0.1, maxval = 1, step = 0.05, group = G5)
+dailyLossPct   = input.float(3.0, "Daily loss limit % (no new entries until 00:00 UTC)", minval = 0.5, group = G5)
+maxDDPct       = input.float(15.0, "Max drawdown % → HALT (flatten + stop)", minval = 2, group = G5)
+maxConsecLoss  = input.int(3, "Consecutive losses before cooldown", minval = 1, group = G5)
+cooldownBars   = input.int(12, "Cooldown length (bars)", minval = 1, group = G5)
+maxEntriesDay  = input.int(3, "Max new entries per UTC day", minval = 1, group = G5)
+maxLev         = input.float(1.0, "Max leverage (notional / equity)", minval = 0.1, maxval = 1.5, step = 0.1, group = G5, tooltip = "1.0 = spot-like. Above 1.0 only on perps. Properties tab margin is set for up to 1.5x.")
+lotStep        = input.float(0.00001, "Exchange lot step (BTC)", minval = 0.00000001, step = 0.00001, group = G5)
+minNotional    = input.float(10.0, "Exchange min notional (USDT)", minval = 1, group = G5)
+feePct         = input.float(0.10, "Assumed fee per side %", minval = 0, step = 0.005, group = G5, tooltip = "Only used by the cost filter. Keep equal to Properties > Commission.")
+slipTicks      = input.float(1000, "Assumed slippage per side (ticks)", minval = 0, group = G5, tooltip = "Only used by the cost filter. Keep equal to Properties > Slippage.")
+maxCostShare   = input.float(20.0, "Skip trade if round-trip cost > % of R", minval = 1, maxval = 100, group = G5, tooltip = "1H stops are tight, so fees eat a large part of each R. Raise to trade more, lower to be pickier.")
+warmupBars     = input.int(1000, "Warm-up bars before trading", minval = 250, group = G5)
+resumeTime     = input.time(timestamp("1 Jan 2017 00:00 +0000"), "Halt reset / live-start time", group = G5, tooltip = "After a max-drawdown HALT, set this to the current date/time to resume. Peak equity is re-based at this time.")
+
+blk1Start = input.time(timestamp("1 Jan 2000 00:00 +0000"), "Blackout 1 start (e.g. FOMC/CPI)", group = G6)
+blk1End   = input.time(timestamp("1 Jan 2000 00:00 +0000"), "Blackout 1 end", group = G6, tooltip = "Blackout is active only if end > start. No new entries inside the window.")
+blk2Start = input.time(timestamp("1 Jan 2000 00:00 +0000"), "Blackout 2 start", group = G6)
+blk2End   = input.time(timestamp("1 Jan 2000 00:00 +0000"), "Blackout 2 end", group = G6)
+
+alertsOn   = input.bool(true, "Send JSON alert messages", group = G7)
+passphrase = input.string("CHANGE_ME", "Webhook passphrase", group = G7)
+showDash   = input.bool(true, "Show dashboard", group = G7)
+
+if tp1Pct + tp2Pct >= 100
+    runtime.error("TP1 % + TP2 % must be below 100 so a runner remains.")
+
+// ═══════════════════════════ PERSISTENT STATE ════════════════════════════════
+var float peakEq       = strategy.initial_capital
+var bool  halted       = false
+var float dayStartEq   = strategy.initial_capital
+var int   entriesToday = 0
+var int   consecLoss   = 0
+var int   cooldownUntil = -1
+var float npAtEntry    = 0.0
+var bool  tradeLive    = false
+var int   signalBar    = -1
+var int   curDir       = 0
+var float stopDist     = na
+var float initQty      = 0.0
+var int   stage        = 0
+var float curStop      = na
+var float extremeClose = na
+var float lastStopSent = na
+var float tp1Line      = na
+var float tp2Line      = na
+
+var table dash = table.new(position.top_right, 2, 11, bgcolor = color.new(color.black, 15), border_width = 1, border_color = color.new(color.gray, 60))
+
+// ═══════════════════════════════ HELPERS ═════════════════════════════════════
+f_lot(float x) =>
+    math.round(math.floor(x / lotStep + 1e-9) * lotStep, 8)
+
+f_msg(string action, float qty, float px, float sl, float t1, float t2) =>
+    string s = '{"passphrase":"' + passphrase + '","action":"' + action + '","symbol":"' + syminfo.ticker + '"'
+    s += ',"qty":' + str.tostring(nz(qty), "0.00000")
+    s += ',"price":' + str.tostring(nz(px), "0.00")
+    s += ',"stop":' + str.tostring(nz(sl), "0.00")
+    s += ',"tp1":' + str.tostring(nz(t1), "0.00")
+    s += ',"tp2":' + str.tostring(nz(t2), "0.00")
+    s += ',"order_id":"ITE-' + str.tostring(time) + '-' + action + '","timestamp":' + str.tostring(time) + '}'
+    s
+
+f_row(int r, string k, string v, color c) =>
+    table.cell(dash, 0, r, k, text_color = color.silver, text_halign = text.align_left, text_size = size.small)
+    table.cell(dash, 1, r, v, text_color = c, text_halign = text.align_left, text_size = size.small)
+
+// ═════════════════════ INDICATORS (all at global scope) ══════════════════════
+float atr14   = ta.atr(atrLen)
+float atrT    = ta.atr(trailAtrLen)
+float atrPct  = atr14 / close * 100
+float ema21   = ta.ema(close, emaPullLen)
+[diPlus, diMinus, adxVal] = ta.dmi(adxLen, adxLen)
+float rsiVal  = ta.rsi(close, rsiLen)
+float volMA   = ta.sma(volume, volLen)
+float donHi   = ta.highest(high, donEntryLen)[1]
+float donLo   = ta.lowest(low, donEntryLen)[1]
+float donFastHi = ta.highest(high, donFastLen)[1]
+float donFastLo = ta.lowest(low, donFastLen)[1]
+float donExitLo = ta.lowest(low, donExitLen)[1]
+float donExitHi = ta.highest(high, donExitLen)[1]
+float lowestN  = ta.lowest(low, pullLook)
+float highestN = ta.highest(high, pullLook)
+int barsSinceRsiUp   = ta.barssince(ta.crossover(rsiVal, 50))
+int barsSinceRsiDown = ta.barssince(ta.crossunder(rsiVal, 50))
+
+// Regime (4H): only the last CLOSED higher-timeframe bar is used ([1] + lookahead_on = no repaint)
+[dClose, dEmaF, dEmaS, dEmaSPrev] = request.security(syminfo.tickerid, regimeTF,
+     [close[1], ta.ema(close, emaFastLen)[1], ta.ema(close, emaSlowLen)[1], ta.ema(close, emaSlowLen)[1 + slopeLen]],
+     lookahead = barmerge.lookahead_on)
+// Macro (1D)
+[mClose, mEma] = request.security(syminfo.tickerid, macroTF,
+     [close[1], ta.ema(close, macroLen)[1]],
+     lookahead = barmerge.lookahead_on)
+
+bool macroData = not useMacro or (not na(mClose) and not na(mEma))
+bool dataOK = bar_index >= warmupBars and macroData and not na(dClose) and not na(dEmaF) and not na(dEmaS) and not na(dEmaSPrev) and not na(atr14) and atr14 > 0 and not na(adxVal) and not na(rsiVal) and not na(donHi) and not na(volMA)
+bool macroLong   = not useMacro or mClose > mEma
+bool macroShort  = not useMacro or mClose < mEma
+bool regimeLong  = dataOK and dClose > dEmaS and dEmaF > dEmaS and dEmaS > dEmaSPrev and macroLong
+bool regimeShort = dataOK and dClose < dEmaS and dEmaF < dEmaS and dEmaS < dEmaSPrev and macroShort
+
+// Stop distance and cost-vs-risk (recomputed every bar; also shown on dashboard)
+float distNow      = math.min(math.max(stopAtrMult * atr14, close * minStopPct / 100), close * maxStopPct / 100)
+float distPctNow   = distNow / close * 100
+float costPctNow   = 2 * feePct + 2 * slipTicks * syminfo.mintick / close * 100
+float costShareNow = distPctNow > 0 ? costPctNow / distPctNow * 100 : 999.0
+
+// ═════════════════════════ RISK STATE / BREAKERS ═════════════════════════════
+int  dayIdx = math.floor(time / 86400000)
+bool newDay = dayIdx != nz(dayIdx[1], dayIdx)
+if newDay
+    dayStartEq   := strategy.equity
+    entriesToday := 0
+
+if time >= resumeTime and nz(time[1], 0) < resumeTime
+    peakEq := strategy.equity
+    halted := false
+
+peakEq := math.max(peakEq, strategy.equity)
+float ddPct      = peakEq > 0 ? (peakEq - strategy.equity) / peakEq * 100 : 0.0
+float dayLossNow = dayStartEq > 0 ? (dayStartEq - strategy.equity) / dayStartEq * 100 : 0.0
+bool  dayLocked  = dayLossNow >= dailyLossPct
+
+if ddPct >= maxDDPct and not halted and time >= resumeTime
+    halted := true
+    if alertsOn
+        alert(f_msg("HALT_MAX_DRAWDOWN", 0, close, 0, 0, 0), alert.freq_once_per_bar_close)
+
+// ═════════════════════════ POSITION / TRADE STATE ════════════════════════════
+bool posOpen = strategy.position_size != 0
+
+// Resolve a finished trade (also catches trades entered and stopped within one bar)
+bool resolved = false
+if tradeLive and not posOpen and bar_index > signalBar
+    tradeLive := false
+    resolved  := true
+    float pnl = strategy.netprofit - npAtEntry
+    if pnl < 0
+        consecLoss += 1
+        if consecLoss >= maxConsecLoss
+            cooldownUntil := bar_index + cooldownBars
+            consecLoss := 0
+    else
+        consecLoss := 0
+
+// ═══════════════════════════════ ENTRY SIGNALS ═══════════════════════════════
+bool volOK        = volMA > 0 and volume >= volMA * volMult
+bool volatilityOK = atrPct >= atrPctMin and atrPct <= atrPctMax
+
+// A: primary breakout   C: fast breakout (needs stronger ADX and price above the EMA)   B: pullback
+bool longBreakout = useBreakout and regimeLong and close > donHi and adxVal >= adxMin and diPlus > diMinus and rsiVal >= rsiMinL and rsiVal <= rsiMaxL and volOK and volatilityOK
+bool longFast     = useFast and regimeLong and close > donFastHi and close > ema21 and adxVal >= adxMinFast and diPlus > diMinus and rsiVal >= rsiMinL and rsiVal <= rsiMaxL and volOK and volatilityOK
+bool longPullback = usePullback and regimeLong and lowestN <= ema21 + pullTouchAtr * atr14 and close > ema21 and close > high[1] and barsSinceRsiUp <= rsiCrossBars and adxVal >= adxMinPB and volatilityOK
+
+bool shortBreakout = useBreakout and regimeShort and close < donLo and adxVal >= adxMin and diMinus > diPlus and rsiVal >= rsiMinS and rsiVal <= rsiMaxS and volOK and volatilityOK
+bool shortFast     = useFast and regimeShort and close < donFastLo and close < ema21 and adxVal >= adxMinFast and diMinus > diPlus and rsiVal >= rsiMinS and rsiVal <= rsiMaxS and volOK and volatilityOK
+bool shortPullback = usePullback and regimeShort and highestN >= ema21 - pullTouchAtr * atr14 and close < ema21 and close < low[1] and barsSinceRsiDown <= rsiCrossBars and adxVal >= adxMinPB and volatilityOK
+
+bool goLong  = allowLong  and (longBreakout or longFast or longPullback)
+bool goShort = allowShort and (shortBreakout or shortFast or shortPullback)
+string entryTag = goLong ? (longBreakout ? "BRK" : longFast ? "FBRK" : "PB") : (shortBreakout ? "BRK" : shortFast ? "FBRK" : "PB")
+
+bool inRange   = not useDateRange or (time >= startTime and time <= endTime)
+bool blackout  = (blk1End > blk1Start and time >= blk1Start and time < blk1End) or (blk2End > blk2Start and time >= blk2Start and time < blk2End)
+bool canEnter  = barstate.isconfirmed and tradingEnabled and inRange and dataOK and not halted and not dayLocked and bar_index > cooldownUntil and entriesToday < maxEntriesDay and not blackout and not posOpen and not tradeLive and not resolved
+
+int  sigDir    = canEnter ? (goLong ? 1 : goShort ? -1 : 0) : 0
+bool signalNow = false
+
+if sigDir != 0
+    // --- volatility-based sizing ---
+    float riskEff = riskPct * (ddPct >= ddScaleStart ? ddScaleFactor : 1.0)
+    float dist    = distNow
+    float qtyRisk = strategy.equity * riskEff / 100 / dist
+    float qtyCap  = strategy.equity * maxLev / close
+    float posQty  = f_lot(math.min(qtyRisk, qtyCap))
+    float sq1     = f_lot(posQty * tp1Pct / 100)
+    float sq2     = f_lot(posQty * tp2Pct / 100)
+    bool  costOK  = costShareNow <= maxCostShare
+    bool  sizeOK  = dist > 0 and costOK and posQty * close >= minNotional and sq1 >= lotStep and sq2 >= lotStep and posQty - sq1 - sq2 >= lotStep
+    if sizeOK
+        float sStop = math.round_to_mintick(close - sigDir * dist)
+        float sTp1  = math.round_to_mintick(close + sigDir * tp1R * dist)
+        float sTp2  = math.round_to_mintick(close + sigDir * tp2R * dist)
+        string act  = sigDir == 1 ? "ENTRY_LONG" : "ENTRY_SHORT"
+        strategy.entry(sigDir == 1 ? "L" : "S", sigDir == 1 ? strategy.long : strategy.short, qty = posQty, comment = entryTag, alert_message = alertsOn ? f_msg(act, posQty, close, sStop, sTp1, sTp2) : "")
+        curDir       := sigDir
+        stopDist     := dist
+        initQty      := posQty
+        stage        := 0
+        curStop      := sStop
+        lastStopSent := sStop
+        extremeClose := close
+        tradeLive    := true
+        signalBar    := bar_index
+        npAtEntry    := strategy.netprofit
+        entriesToday += 1
+        signalNow    := true
+
+// ══════════════════════════ EXIT MANAGEMENT (SL / TP) ════════════════════════
+if posOpen or signalNow
+    int   d       = curDir
+    float R       = stopDist
+    float entryPx = posOpen ? strategy.position_avg_price : close
+    string eid    = d == 1 ? "L" : "S"
+    float q1      = f_lot(initQty * tp1Pct / 100)
+    float q2      = f_lot(initQty * tp2Pct / 100)
+
+    if posOpen
+        extremeClose := d == 1 ? math.max(extremeClose, close) : math.min(extremeClose, close)
+        // Stage detection from remaining size (robust to partial fills)
+        float absSz = math.abs(strategy.position_size)
+        int st = stage
+        if q1 > 0 and absSz <= initQty - 0.5 * q1
+            st := 1
+        if q2 > 0 and absSz <= initQty - q1 - 0.5 * q2
+            st := 2
+        stage := math.max(stage, st)
+
+    tp1Line := math.round_to_mintick(entryPx + d * tp1R * R)
+    tp2Line := math.round_to_mintick(entryPx + d * tp2R * R)
+
+    // Ratcheting stop: initial → break-even+fees after TP1 → chandelier after TP2
+    float cand = entryPx - d * R
+    if stage >= 1
+        float be = entryPx * (1 + d * beFeePct / 100)
+        cand := d == 1 ? math.max(cand, be) : math.min(cand, be)
+    if stage >= 2 and not na(atrT)
+        float ch = extremeClose - d * trailMult * atrT
+        cand := d == 1 ? math.max(cand, ch) : math.min(cand, ch)
+    curStop := math.round_to_mintick(d == 1 ? math.max(curStop, cand) : math.min(curStop, cand))
+
+    if stage < 1 and q1 > 0
+        strategy.exit("TP1", eid, qty = q1, limit = tp1Line, comment = "TP1", alert_message = alertsOn ? f_msg("EXIT_TP1", q1, tp1Line, curStop, tp1Line, tp2Line) : "")
+    if stage < 2 and q2 > 0
+        strategy.exit("TP2", eid, qty = q2, limit = tp2Line, comment = "TP2", alert_message = alertsOn ? f_msg("EXIT_TP2", q2, tp2Line, curStop, tp1Line, tp2Line) : "")
+    // Stop covers the whole remaining position (runner included)
+    strategy.exit("SL", eid, stop = curStop, comment = stage >= 1 ? "TRAIL/BE" : "SL", alert_message = alertsOn ? f_msg("EXIT_STOP", math.abs(strategy.position_size), curStop, curStop, tp1Line, tp2Line) : "")
+
+// ─────────── discretionary exits (executed at next bar open) ────────────────
+if posOpen
+    int   d     = curDir
+    float entryPx = strategy.position_avg_price
+    int   barsIn = bar_index - strategy.opentrades.entry_bar_index(0)
+    float openR  = (close - entryPx) * d / stopDist
+    bool regimeFail = dataOK and ((d == 1 and dClose < dEmaS) or (d == -1 and dClose > dEmaS))
+    bool macroFail  = dataOK and useMacro and ((d == 1 and mClose < mEma) or (d == -1 and mClose > mEma))
+    bool donFail    = stage >= 2 and not na(donExitLo) and ((d == 1 and close < donExitLo) or (d == -1 and close > donExitHi))
+    bool timeStop   = stage == 0 and barsIn >= timeStopBars and openR < timeStopR
+    string reason = ""
+    if halted
+        reason := "MAX_DD_HALT"
+    else if not tradingEnabled
+        reason := "KILL_SWITCH"
+    else if regimeFail or macroFail
+        reason := "TREND_FAIL"
+    else if donFail
+        reason := "DONCHIAN_EXIT"
+    else if timeStop
+        reason := "TIME_STOP"
+    if reason != ""
+        strategy.close_all(comment = reason, alert_message = alertsOn ? f_msg("EXIT_" + reason, math.abs(strategy.position_size), close, curStop, tp1Line, tp2Line) : "")
+
+// Stop-move notification for the exchange-side bridge
+if alertsOn and posOpen and not na(curStop) and curStop != lastStopSent
+    alert(f_msg("UPDATE_STOP", math.abs(strategy.position_size), close, curStop, tp1Line, tp2Line), alert.freq_once_per_bar_close)
+    lastStopSent := curStop
+
+// ═══════════════════════════════ PLOTS ═══════════════════════════════════════
+plot(dEmaF, "Regime EMA fast (4H)", color.new(color.orange, 0), 1)
+plot(dEmaS, "Regime EMA slow (4H)", color.new(color.red, 0), 2)
+plot(ema21, "EMA pullback", color.new(color.aqua, 40), 1)
+plot(donHi, "Donchian entry high", color.new(color.teal, 65), 1)
+plot(donLo, "Donchian entry low", color.new(color.maroon, 65), 1)
+plot(posOpen ? curStop : na, "Active stop", color.red, 2, plot.style_linebr)
+plot(posOpen and stage < 1 ? tp1Line : na, "TP1", color.green, 1, plot.style_linebr)
+plot(posOpen and stage < 2 ? tp2Line : na, "TP2", color.lime, 1, plot.style_linebr)
+bgcolor(regimeLong ? color.new(color.green, 94) : regimeShort ? color.new(color.red, 94) : na)
+
+// ═════════════════════════════════ DASHBOARD ═════════════════════════════════
+if showDash and barstate.islast
+    float openRNow = posOpen ? (close - strategy.position_avg_price) * curDir / stopDist : 0.0
+    string breaker = halted ? "HALTED (max DD)" : dayLocked ? "DAY LOCK" : bar_index <= cooldownUntil ? "COOLDOWN" : not tradingEnabled ? "KILL SWITCH" : "OK"
+    f_row(0, "Regime", regimeLong ? "LONG OK" : regimeShort ? "SHORT OK" : "NEUTRAL", regimeLong ? color.lime : regimeShort ? color.red : color.gray)
+    f_row(1, "Position", posOpen ? (strategy.position_size > 0 ? "LONG " : "SHORT ") + str.tostring(math.abs(strategy.position_size), "0.00000") : "FLAT", posOpen ? color.white : color.gray)
+    f_row(2, "Open R", str.tostring(openRNow, "0.00") + "R", openRNow >= 0 ? color.lime : color.red)
+    f_row(3, "Stage", posOpen ? str.tostring(stage) + (stage == 0 ? " (initial)" : stage == 1 ? " (BE)" : " (trail)") : "-", color.white)
+    f_row(4, "Stop", posOpen ? str.tostring(curStop, "0.00") : "-", color.white)
+    f_row(5, "Day P&L", str.tostring(-dayLossNow, "0.00") + "%", dayLossNow > 0 ? color.orange : color.lime)
+    f_row(6, "Drawdown", str.tostring(ddPct, "0.00") + "%", ddPct >= ddScaleStart ? color.orange : color.white)
+    f_row(7, "Breaker", breaker, breaker == "OK" ? color.lime : color.red)
+    f_row(8, "Entries today", str.tostring(entriesToday) + "/" + str.tostring(maxEntriesDay), color.white)
+    f_row(9, "Cost / R now", str.tostring(costShareNow, "0.0") + "% (max " + str.tostring(maxCostShare, "0") + "%)", costShareNow <= maxCostShare ? color.lime : color.orange)
+    f_row(10, "Chart TF", timeframe.period + (timeframe.period == "60" ? "" : "  (1H intended)"), timeframe.period == "60" ? color.white : color.orange)
