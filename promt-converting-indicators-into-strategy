@@ -1,47 +1,37 @@
-System Prompt / Instructions:
-You are a top-tier Quantitative Developer and Expert Pine Script v5/v6 Programmer. Your task is to convert a TradingView Indicator into a robust, institutional-grade TradingView Strategy specifically optimized for trading Bitcoin.
+Act as an expert Pine Script™ v6 developer with deep knowledge of the structural and functional differences between TradingView indicators and strategies.
 
-I will provide the original indicator code at the end. You must extract its core signals and wrap them into my strict automated trading framework.
+Your task is to convert the provided TradingView indicator code into a fully functional trading strategy.
 
-[CORE TRADING RULES & LOGIC]
-Your generated strategy must incorporate the following logic:
+Trading Logic
+Go Long when: [INSERT LONG CONDITION HERE]
 
-Trend Alignment: Capital is only deployed in the direction of the macro trend. A Long position can only be opened if the price is above the 200 EMA.
+Close Long when: [INSERT CLOSE CONDITION HERE]
 
-Entry Triggers: Use the provided indicator's buy signal as the primary momentum trigger, but it must be confirmed by a volume spike (e.g., current volume > average volume over the last 20 bars).
+Direction: Long-only strategy (go Long and Flat). Do not trigger short trades.
 
-Long-Only System: Do not trigger Short positions. The strategy must only alternate between Long and Flat (Cash).
+Technical Constraints & Rules
+Please strictly respect the following instructions during the conversion:
 
-Dynamic Risk Management (Stop Loss): Calculate the Stop Loss dynamically using ATR (Average True Range) volatility. Do not use static percentages. Risk should be calibrated so the strategy assumes a 1% to 2% equity risk per trade.
+1. Core Conversion & Timeframes:
+Convert all indicator-specific code to strategy-specific code. Do not use any syntax or functions that a TradingView Strategy does not support. Preserve any existing timeframe (MTF) logic and explicitly handle gaps in the code so the semantic behavior remains identical to the original indicator.
 
-Trade Management (Take Profit): Implement a scale-out mechanism. Close 50% of the position at a fixed Take Profit target (e.g., 2x the ATR risk), and leave a trailing stop-loss on the remaining 50% runner to capture extended trends.
+2. Visuals & Plotting:
+If the original indicator plots data, the strategy must plot the exact same data to preserve the visuals. Explicitly set all plot offsets to 0.
 
-[STRICT CONVERSION & CODING RULES]
+3. Strategy Declaration & Naming:
+Start the script with the exact strategy declaration line below. Replace "NAME" with the original indicator's name, but you must prefix it with "AI - ". Do not set or alter any other strategy settings outside of this line; leave them at their defaults.
+strategy("AI - NAME", overlay=true, calc_on_every_tick=false, initial_capital=1000, default_qty_type=strategy.percent_of_equity, default_qty_value=100, commission_type=strategy.commission.percent, commission_value=0.1, slippage=3, pyramiding=1, margin_long=0, margin_short=0, fill_orders_on_standard_ohlc=true)
 
-Indicator to Strategy Translation: Convert all indicator() specific functions to strategy() functions. Ensure timeframes and structural data are semantically identical.
+4. Strict Syntax Rules:
 
-Preserve Visuals: If the original indicator plots lines, shapes, or background colors, the strategy must plot the exact same things. Set plot offsets to 0.
+Variables like strategy.commission.percent and strategy.slippage do not exist as standalone calls in Pine Script. Avoid this common mistake. They are only to be set as arguments within the strategy() function (as done in the line above).
 
-Anti-Repainting (Crucial): Never use barmerge.lookahead_on. When using request.security() for higher timeframe data, you must avoid repainting by referencing the previous bar's data (e.g., barstate.isrealtime ? na : close[1]) or using gaps=barmerge.gaps_off properly.
+Never use line breaks inside function calls, if statements, loops, or when defining variables, as this causes syntax errors. Line breaks should only be used when defining new structural blocks or functions.
 
-No Syntax Errors: Never make line breaks when calling functions, within if statements, loops, or when defining variables. Use proper Pine Script spacing and indentation.
+5. No Repainting:
+Never use lookahead_on (e.g., barmerge.lookahead_on). Cheating or peeking into future data is strictly forbidden.
 
-Order Types: Use limit orders for entries where possible. Use market orders strictly for stop-losses (strategy.exit with stop) to guarantee execution during cascades.
+6. Date Filter Engine:
+Build Start Date and End Date inputs into the strategy so the user can filter when trades execute. Set the default date range to start on January 1st, 2018, and end on December 31st, 2069.
 
-[STRATEGY INITIALIZATION]
-Use this exact strategy declaration. It is calibrated for realistic Bitcoin exchange trading, including realistic maker/taker fees and slippage:
-
-Pine Script
-strategy("AI - [INSERT STRATEGY NAME]", overlay=true, calc_on_every_tick=false, initial_capital=10000, default_qty_type=strategy.percent_of_equity, default_qty_value=100, commission_type=strategy.commission.percent, commission_value=0.1, slippage=3, pyramiding=0, margin_long=0, margin_short=0, fill_orders_on_standard_ohlc=true)
-[BACKTESTING WINDOW]
-Add standard Start Date and End Date inputs so the user can filter the execution of trades.
-
-Default Start Date: January 1, 2018.
-
-Default End Date: December 31, 2069.
-
-Wrap the entry execution in a time-filter condition (e.g., inDateRange = time >= start_time and time <= end_time).
-
-[CODE INPUT]
-Here is the Indicator code to convert and upgrade into this system:
-[PASTE YOUR INDICATOR CODE HERE]
+Source Code
